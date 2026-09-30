@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -1346,12 +1347,11 @@ func TestLPXExternalScaleInAfterSchedulingFailure(t *testing.T) {
 func TestLPXInvalidEditsPreserveExistingWorkload(t *testing.T) {
 	for _, scenario := range []struct {
 		name, message string
-		preserve      bool
 	}{
 		{name: "render", message: "model storage volume mount"},
 		{name: "invalid source", message: "source"},
-		{name: "transient snapshot", message: "temporary snapshot timeout", preserve: true},
-		{name: "inconsistent snapshot", message: "immutable LPX build snapshot"},
+		{name: "transient snapshot", message: "temporary snapshot timeout"},
+		{name: "invalid manifest", message: "invalid LPX build"},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			t.Log("Create a PCS, its scaling groups, and a discovery endpoint before publishing requests")
@@ -1387,12 +1387,12 @@ func TestLPXInvalidEditsPreserveExistingWorkload(t *testing.T) {
 				component.ComponentRole(v1beta1.ComponentRoleLPXAgent).PodTemplate.Spec.Containers[0].VolumeMounts = nil
 			case "invalid source":
 				child.OwnerReferences[0].UID = "replaced-source"
-			case "transient snapshot", "inconsistent snapshot":
-				cause := errors.New("temporary snapshot timeout")
-				if !scenario.preserve {
-					cause = lpx.ErrBuildSnapshotInconsistent
-				}
-				r.modelRegistry = &snapshotFailureRegistry{ModelRegistry: registry, err: cause}
+			case "transient snapshot":
+				r.modelRegistry = &snapshotFailureRegistry{ModelRegistry: registry, err: errors.New("temporary snapshot timeout")}
+			case "invalid manifest":
+				buildURL, err := registry.BuildURL(component.LPX.BuildID)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(filepath.Join(buildURL.Path, "manifest.v2.capnp.bin"), []byte("invalid"), 0o600))
 			}
 			dgd.Generation++
 			require.NoError(t, r.Update(t.Context(), dgd))
@@ -2378,7 +2378,7 @@ type snapshotFailureRegistry struct {
 	err error
 }
 
-func (r *snapshotFailureRegistry) AcquireBuildSnapshot(context.Context, string) (*lpx.BuildSnapshot, error) {
+func (r *snapshotFailureRegistry) AcquireBuild(context.Context, string) (*lpx.Build, error) {
 	return nil, r.err
 }
 
@@ -2389,15 +2389,15 @@ type downloadOrderedLPXRegistry struct {
 	calls      []string
 }
 
-func (r *downloadOrderedLPXRegistry) AcquireBuildSnapshot(
+func (r *downloadOrderedLPXRegistry) AcquireBuild(
 	ctx context.Context,
 	buildID string,
-) (*lpx.BuildSnapshot, error) {
+) (*lpx.Build, error) {
 	r.calls = append(r.calls, "snapshot")
 	if !r.downloaded {
 		return nil, errors.New("LPX snapshot acquired before Model Express download")
 	}
-	return r.ModelRegistry.AcquireBuildSnapshot(ctx, buildID)
+	return r.ModelRegistry.AcquireBuild(ctx, buildID)
 }
 
 func (r *downloadOrderedLPXRegistry) BuildURL(string) (*url.URL, error) {
@@ -2455,7 +2455,7 @@ func TestLPXPublishedWorkloadCleanupAfterFailure(t *testing.T) {
 		name          string
 		snapshotError error
 	}{
-		{name: "inconsistent snapshot", snapshotError: fmt.Errorf("%w: compiler metadata changed during duplicate reads", lpx.ErrBuildSnapshotInconsistent)},
+		{name: "invalid manifest"},
 		{name: "transient snapshot", snapshotError: errors.New("temporary object-store timeout")},
 		{name: "render failure"},
 	} {
@@ -2476,7 +2476,12 @@ func TestLPXPublishedWorkloadCleanupAfterFailure(t *testing.T) {
 
 			t.Log("Fail the actual snapshot dependency or break cross-role model storage")
 			message := "must use the Conductor model-storage mount path"
-			if test.snapshotError != nil {
+			if test.name == "invalid manifest" {
+				buildURL, err := registry.BuildURL(dgd.GetComponentByName("lpx").LPX.BuildID)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(filepath.Join(buildURL.Path, "manifest.v2.capnp.bin"), []byte("invalid"), 0o600))
+				message = "invalid LPX build"
+			} else if test.snapshotError != nil {
 				reconciler.modelRegistry = &snapshotFailureRegistry{ModelRegistry: registry, err: test.snapshotError}
 				message = test.snapshotError.Error()
 			} else {
@@ -2507,6 +2512,8 @@ func TestLPXPublishedWorkloadCleanupAfterFailure(t *testing.T) {
 			if test.snapshotError != nil {
 				require.ErrorIs(t, err, test.snapshotError)
 				require.ErrorIs(t, err, lpx.ErrBuildSnapshotAcquisition)
+			} else if test.name == "invalid manifest" {
+				require.NotErrorIs(t, err, lpx.ErrBuildSnapshotAcquisition)
 			}
 			require.NoError(t, reconciler.Get(ctx, key, deployment))
 			failed := meta.FindStatusCondition(deployment.Status.Conditions, "Ready")
