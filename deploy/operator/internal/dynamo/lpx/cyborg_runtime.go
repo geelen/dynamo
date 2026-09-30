@@ -15,29 +15,28 @@ import (
 
 const gbuildManifestPathEnv = "GBUILD_MANIFEST_PATH"
 
-// MinimumCyborgReplicas returns one complete client group for a resolved hybrid workload.
-func (w *Workload) MinimumCyborgReplicas() (int32, error) {
-	build := &w.modelProjections[0].configuredBuild
-	replicas := int64(build.ioFPGACount) * int64(build.ioFanoutFactor)
+// minimumCyborgReplicas returns one complete client group for a hybrid build.
+func minimumCyborgReplicas(b *Build) (int32, error) {
+	replicas := int64(b.ioFPGACount) * int64(b.ioFanoutFactor)
 	if replicas > math.MaxInt32 {
 		return 0, fmt.Errorf("minimum Cyborg replicas %d exceeds the PodClique replica limit %d", replicas, math.MaxInt32)
 	}
 	return int32(replicas), nil
 }
 
-// ValidateCyborgReplicas checks an externally managed Cyborg width in the named
-// clique: it must form complete client groups and valid Pod hostnames.
-// The workload is hybrid.
-func (w *Workload) ValidateCyborgReplicas(cliqueName string, replicas int32) error {
-	if err := validateCyborgReplicas(&w.modelProjections[0].configuredBuild, replicas); err != nil {
+// ValidateCyborgReplicas checks an externally managed Cyborg width in one
+// scaling-group replica: it must form complete client groups, and the clique's
+// last Pod hostname must be a valid DNS label. The workload is hybrid.
+func (w *Workload) ValidateCyborgReplicas(replica, replicas int32) error {
+	if err := validateCyborgReplicas(&w.models[0].component.configuredBuild, replicas); err != nil {
 		return err
 	}
-	return validatePodHostname("Cyborg", cliqueName, int(replicas)-1)
+	return validatePodHostname("Cyborg", w.ConductorCliqueName(replica), int(replicas)-1)
 }
 
 // applyCyborgManifestPath projects an authoritative manifest location into one Cyborg container.
-func applyCyborgManifestPath(container *corev1.Container, projection *ModelProjection, modelStoragePath string) error {
-	buildRoot, err := buildRuntimePath(projection.configuredBuild.path, projection.runtimeBuildRef, modelStoragePath)
+func applyCyborgManifestPath(container *corev1.Container, projection *Model, modelStoragePath string) error {
+	buildRoot, err := buildRuntimePath(projection.component.configuredBuild.path, projection.component.runtimeBuildRef, modelStoragePath)
 	if err != nil {
 		return fmt.Errorf("resolve GBuild manifest path: %w", err)
 	}

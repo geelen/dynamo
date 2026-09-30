@@ -180,14 +180,14 @@ func scalePodCliqueScalingGroup(ctx context.Context, cl client.Client, pcsg *gro
 	return true, nil
 }
 
-// scalePodCliques scales the named template's clique in every replica of the
-// non-nil pcsg. Call only for explicitly managed capacity.
+// scaleConductorPodCliques scales the workload's conductor clique in every replica
+// of its non-nil pcsg. Call only for explicitly managed capacity.
 // The provided PCLQs remain unchanged; the returned bool reports whether they were updated.
-func scalePodCliques(ctx context.Context, cl client.Client, pcsg *grovev1alpha1.PodCliqueScalingGroup, pclqs map[string]*grovev1alpha1.PodClique, templateName string, replicas int32) (bool, error) {
+func scaleConductorPodCliques(ctx context.Context, cl client.Client, pcsg *grovev1alpha1.PodCliqueScalingGroup, pclqs map[string]*grovev1alpha1.PodClique, workload *lpx.Workload, replicas int32) (bool, error) {
 	var changed bool
 
 	for index := range pcsg.Spec.Replicas {
-		name := grovecommon.GeneratePodCliqueName(grovecommon.ResourceNameReplica{Name: pcsg.Name, Replica: int(index)}, templateName)
+		name := workload.ConductorCliqueName(index)
 		pclq := pclqs[name]
 		if pclq == nil || pclq.Spec.Replicas == replicas {
 			continue
@@ -214,27 +214,4 @@ func updateScale(ctx context.Context, cl client.Client, resource client.Object, 
 	}
 
 	return cl.SubResource("scale").Update(ctx, resource, client.WithSubResourceBody(scale))
-}
-
-// validateWorkloadReplicas checks live capacity against rendered Agent and Cyborg
-// widths. All inputs are non-nil and describe the same resolved workload.
-func validateWorkloadReplicas(workload *lpx.Workload, plan *lpx.MaterializationPlan, pcs *grovev1alpha1.PodCliqueSet) error {
-	if err := plan.ValidateReplicaCount(); err != nil {
-		return err
-	}
-	if plan.CyborgTemplate == "" {
-		return nil
-	}
-
-	// Recheck the rendered Cyborg width against live scaling-group capacity.
-	for _, clique := range pcs.Spec.Template.Cliques {
-		if clique.Name != plan.CyborgTemplate {
-			continue
-		}
-		name := grovecommon.GeneratePodCliqueName(grovecommon.ResourceNameReplica{
-			Name: plan.LPXScalingGroup, Replica: int(max(0, plan.Replicas-1)),
-		}, plan.CyborgTemplate)
-		return workload.ValidateCyborgReplicas(name, clique.Spec.Replicas)
-	}
-	return nil
 }
