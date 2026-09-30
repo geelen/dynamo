@@ -239,9 +239,9 @@ func (r *graphReconciler) reconcileWorkloads(
 			// External scalers own live capacity once Grove has created the groups.
 			if explicitReplicas[plan.LPXScalingGroup] == nil {
 				plan.Replicas = pcsg.Spec.Replicas
-				if err := plan.ValidateReplicaCount(); err != nil {
-					return ctrl.Result{}, err
-				}
+			}
+			if err := validateWorkloadReplicas(workload, plan, desiredPCS); err != nil {
+				return ctrl.Result{}, err
 			}
 
 			desired, missing, intentChanged := resolvePipelineRequests(deployment, requests, workload, plan)
@@ -395,7 +395,7 @@ func (r *graphReconciler) reconcileWorkloadCapacity(
 			continue
 		}
 
-		if err := workload.ValidateCyborgReplicas(pclq.Spec.Replicas); err != nil {
+		if err := workload.ValidateCyborgReplicas(name, pclq.Spec.Replicas); err != nil {
 			return false, err
 		}
 	}
